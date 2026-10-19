@@ -3,13 +3,14 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Runtime.InteropServices;
 
 namespace Aipms.Net;
 
-public sealed class AipmsStore
+public sealed class AipmsStore : IDisposable
 {
     private readonly object _gate = new();
-    private readonly string _path;
+    private readonly IntPtr _database;
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private DatabaseState _state;
 
@@ -17,18 +18,93 @@ public sealed class AipmsStore
     {
         var directory = Path.Combine(environment.ContentRootPath, "App_Data");
         Directory.CreateDirectory(directory);
-        _path = Path.Combine(directory, "aipms.json");
-        _state = File.Exists(_path)
-            ? JsonSerializer.Deserialize<DatabaseState>(File.ReadAllText(_path), _json) ?? new DatabaseState()
-            : Seed.Create();
-        if (!File.Exists(_path)) Persist();
+        var path = Path.Combine(directory, "aipms.db");
+        _database = NativeSqlite.Open(path);
+        NativeSqlite.Execute(_database, "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL, updated_at TEXT NOT NULL);" + SqliteSchema.Definition);
+        var saved = NativeSqlite.Scalar(_database, "SELECT json FROM app_state WHERE id = 1;");
+        _state = string.IsNullOrWhiteSpace(saved) ? Seed.Create() : JsonSerializer.Deserialize<DatabaseState>(saved, _json) ?? Seed.Create();
+        if (string.IsNullOrWhiteSpace(saved)) Persist();
     }
 
     public T Read<T>(Func<DatabaseState, T> action) { lock (_gate) return action(_state); }
     public T Write<T>(Func<DatabaseState, T> action) { lock (_gate) { var result = action(_state); Persist(); return result; } }
     public void Write(Action<DatabaseState> action) { lock (_gate) { action(_state); Persist(); } }
     public static int Next(DatabaseState state) => state.NextId++;
-    private void Persist() => File.WriteAllText(_path, JsonSerializer.Serialize(_state, _json));
+    private void Persist()
+    {
+        var value = JsonSerializer.Serialize(_state, _json).Replace("'", "''");
+        NativeSqlite.Execute(_database, $"INSERT INTO app_state (id, json, updated_at) VALUES (1, '{value}', datetime('now')) ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at;");
+        SqliteSchema.Sync(_database, _state);
+    }
+    public void Dispose() => NativeSqlite.Close(_database);
+}
+
+internal static class SqliteSchema
+{
+    public const string Definition = @"
+CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, is_active INTEGER NOT NULL, is_approved INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS departments (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS courses (id INTEGER PRIMARY KEY, department_id INTEGER NOT NULL REFERENCES departments(id), name TEXT NOT NULL, UNIQUE(department_id,name));
+CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, website TEXT, industry TEXT, location TEXT, description TEXT, is_verified INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL UNIQUE REFERENCES users(id), full_name TEXT NOT NULL, enrollment_no TEXT UNIQUE, department_id INTEGER REFERENCES departments(id), cgpa REAL, phone TEXT, passing_year INTEGER, bio TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS recruiters (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL UNIQUE REFERENCES users(id), company_id INTEGER REFERENCES companies(id), full_name TEXT NOT NULL, designation TEXT, phone TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS skills (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS student_skills (student_id INTEGER REFERENCES students(id), skill_id INTEGER REFERENCES skills(id), PRIMARY KEY(student_id,skill_id));
+CREATE TABLE IF NOT EXISTS resumes (id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL REFERENCES students(id), filename TEXT NOT NULL, filepath TEXT NOT NULL, raw_text TEXT, is_active INTEGER NOT NULL, uploaded_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS resume_analysis (id INTEGER PRIMARY KEY, resume_id INTEGER NOT NULL REFERENCES resumes(id), ats_score INTEGER NOT NULL, extracted_skills TEXT, missing_skills TEXT, suggestions TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, recruiter_id INTEGER NOT NULL REFERENCES recruiters(id), title TEXT NOT NULL, description TEXT, job_type TEXT, location TEXT, salary_package REAL, min_cgpa REAL, required_skills TEXT, deadline TEXT, posted_at TEXT NOT NULL, is_active INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL REFERENCES jobs(id), student_id INTEGER NOT NULL REFERENCES students(id), status TEXT NOT NULL, ats_score_at_apply INTEGER, applied_at TEXT NOT NULL, UNIQUE(job_id,student_id));
+CREATE TABLE IF NOT EXISTS interviews (id INTEGER PRIMARY KEY, application_id INTEGER NOT NULL UNIQUE REFERENCES applications(id), scheduled_at TEXT, mode TEXT, status TEXT NOT NULL, feedback TEXT);
+CREATE TABLE IF NOT EXISTS offer_letters (id INTEGER PRIMARY KEY, interview_id INTEGER NOT NULL UNIQUE REFERENCES interviews(id), package REAL, joining_date TEXT, response TEXT NOT NULL, response_message TEXT, responded_at TEXT, issued_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS placement_drives (id INTEGER PRIMARY KEY, title TEXT NOT NULL, company_id INTEGER REFERENCES companies(id), drive_date TEXT, description TEXT, status TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), message TEXT NOT NULL, type TEXT NOT NULL, detail TEXT, reference_id INTEGER, is_read INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS student_queries (id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL REFERENCES students(id), subject TEXT, message TEXT NOT NULL, status TEXT NOT NULL, reply TEXT, replied_at TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS personal_messages (id INTEGER PRIMARY KEY, sender_user_id INTEGER REFERENCES users(id), subject TEXT, message TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS personal_message_recipients (message_id INTEGER REFERENCES personal_messages(id), student_id INTEGER REFERENCES students(id), PRIMARY KEY(message_id,student_id));
+CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), action TEXT NOT NULL, created_at TEXT NOT NULL);";
+    private static string Q(string? value) => value is null ? "NULL" : $"'{value.Replace("'", "''")}'";
+    private static string D(DateTime value) => Q(value.ToString("O"));
+    private static string D(DateTime? value) => value is null ? "NULL" : D(value.Value);
+    public static void Sync(IntPtr db, DatabaseState s)
+    {
+        NativeSqlite.Execute(db, "DELETE FROM personal_message_recipients;DELETE FROM personal_messages;DELETE FROM student_queries;DELETE FROM notifications;DELETE FROM offer_letters;DELETE FROM interviews;DELETE FROM applications;DELETE FROM jobs;DELETE FROM resume_analysis;DELETE FROM resumes;DELETE FROM student_skills;DELETE FROM skills;DELETE FROM recruiters;DELETE FROM students;DELETE FROM placement_drives;DELETE FROM courses;DELETE FROM companies;DELETE FROM departments;DELETE FROM audit_logs;DELETE FROM users;");
+        foreach (var x in s.Users) NativeSqlite.Execute(db, $"INSERT INTO users VALUES({x.Id},{Q(x.Email)},{Q(x.PasswordHash)},{Q(x.Role)},{(x.IsActive?1:0)},{(x.IsApproved?1:0)},{D(x.CreatedAt)});");
+        foreach (var x in s.Departments) NativeSqlite.Execute(db, $"INSERT INTO departments VALUES({x.Id},{Q(x.Name)});"); foreach (var x in s.Courses) NativeSqlite.Execute(db, $"INSERT INTO courses VALUES({x.Id},{x.DepartmentId},{Q(x.Name)});");
+        foreach (var x in s.Companies) NativeSqlite.Execute(db, $"INSERT INTO companies VALUES({x.Id},{Q(x.Name)},{Q(x.Website)},{Q(x.Industry)},{Q(x.Location)},{Q(x.Description)},{(x.IsVerified?1:0)});");
+        foreach (var x in s.Students) NativeSqlite.Execute(db, $"INSERT INTO students VALUES({x.Id},{x.UserId},{Q(x.FullName)},{Q(x.EnrollmentNo)},{(x.DepartmentId?.ToString()??"NULL")},{(x.Cgpa?.ToString(System.Globalization.CultureInfo.InvariantCulture)??"NULL")},{Q(x.Phone)},{(x.PassingYear?.ToString()??"NULL")},{Q(x.Bio)},{D(x.CreatedAt)});");
+        foreach (var x in s.Recruiters) NativeSqlite.Execute(db, $"INSERT INTO recruiters VALUES({x.Id},{x.UserId},{(x.CompanyId?.ToString()??"NULL")},{Q(x.FullName)},{Q(x.Designation)},{Q(x.Phone)},{D(x.CreatedAt)});");
+        foreach (var x in s.Skills) NativeSqlite.Execute(db, $"INSERT INTO skills VALUES({x.Id},{Q(x.Name)});"); foreach (var x in s.StudentSkills) NativeSqlite.Execute(db, $"INSERT INTO student_skills VALUES({x.StudentId},{x.SkillId});");
+        foreach (var x in s.Resumes) NativeSqlite.Execute(db, $"INSERT INTO resumes VALUES({x.Id},{x.StudentId},{Q(x.Filename)},{Q(x.Filepath)},{Q(x.RawText)},{(x.IsActive?1:0)},{D(x.UploadedAt)});");
+        foreach (var x in s.ResumeAnalyses) NativeSqlite.Execute(db, $"INSERT INTO resume_analysis VALUES({x.Id},{x.ResumeId},{x.AtsScore},{Q(JsonSerializer.Serialize(x.ExtractedSkills))},{Q(JsonSerializer.Serialize(x.MissingSkills))},{Q(JsonSerializer.Serialize(x.Suggestions))},{D(x.CreatedAt)});");
+        foreach (var x in s.Jobs) NativeSqlite.Execute(db, $"INSERT INTO jobs VALUES({x.Id},{x.RecruiterId},{Q(x.Title)},{Q(x.Description)},{Q(x.JobType)},{Q(x.Location)},{(x.SalaryPackage?.ToString(System.Globalization.CultureInfo.InvariantCulture)??"NULL")},{x.MinCgpa.ToString(System.Globalization.CultureInfo.InvariantCulture)},{Q(string.Join(", ",x.RequiredSkills))},{D(x.Deadline)},{D(x.PostedAt)},{(x.IsActive?1:0)});");
+        foreach (var x in s.Applications) NativeSqlite.Execute(db, $"INSERT INTO applications VALUES({x.Id},{x.JobId},{x.StudentId},{Q(x.Status)},{(x.AtsScoreAtApply?.ToString()??"NULL")},{D(x.AppliedAt)});");
+        foreach (var x in s.Interviews) NativeSqlite.Execute(db, $"INSERT INTO interviews VALUES({x.Id},{x.ApplicationId},{D(x.ScheduledAt)},{Q(x.Mode)},{Q(x.Status)},{Q(x.Feedback)});");
+        foreach (var x in s.OfferLetters) NativeSqlite.Execute(db, $"INSERT INTO offer_letters VALUES({x.Id},{x.InterviewId},{(x.Package?.ToString(System.Globalization.CultureInfo.InvariantCulture)??"NULL")},{D(x.JoiningDate)},{Q(x.Response)},{Q(x.ResponseMessage)},{D(x.RespondedAt)},{D(x.IssuedAt)});");
+        foreach (var x in s.PlacementDrives) NativeSqlite.Execute(db, $"INSERT INTO placement_drives VALUES({x.Id},{Q(x.Title)},{(x.CompanyId?.ToString()??"NULL")},{D(x.DriveDate)},{Q(x.Description)},{Q(x.Status)},{D(x.CreatedAt)});");
+        foreach (var x in s.Notifications) NativeSqlite.Execute(db, $"INSERT INTO notifications VALUES({x.Id},{x.UserId},{Q(x.Message)},{Q(x.Type)},{Q(x.Detail)},{(x.ReferenceId?.ToString()??"NULL")},{(x.IsRead?1:0)},{D(x.CreatedAt)});");
+        foreach (var x in s.StudentQueries) NativeSqlite.Execute(db, $"INSERT INTO student_queries VALUES({x.Id},{x.StudentId},{Q(x.Subject)},{Q(x.Message)},{Q(x.Status)},{Q(x.Reply)},{D(x.RepliedAt)},{D(x.CreatedAt)});");
+        foreach (var x in s.PersonalMessages) NativeSqlite.Execute(db, $"INSERT INTO personal_messages VALUES({x.Id},{x.SenderUserId},{Q(x.Subject)},{Q(x.Message)},{D(x.CreatedAt)});");
+        foreach (var x in s.PersonalMessageRecipients) NativeSqlite.Execute(db, $"INSERT INTO personal_message_recipients VALUES({x.MessageId},{x.StudentId});");
+        foreach (var x in s.AuditLogs) NativeSqlite.Execute(db, $"INSERT INTO audit_logs VALUES({x.Id},{(x.UserId?.ToString()??"NULL")},{Q(x.Action)},{D(x.CreatedAt)});");
+    }
+}
+
+internal static class NativeSqlite
+{
+    private const int Ok = 0, Row = 100, Done = 101, OpenReadWriteCreate = 0x00000006;
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)] private static extern int sqlite3_open_v2(string filename, out IntPtr db, int flags, IntPtr vfs);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_close_v2(IntPtr db);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)] private static extern int sqlite3_exec(IntPtr db, string sql, IntPtr callback, IntPtr arg, out IntPtr error);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)] private static extern int sqlite3_prepare_v2(IntPtr db, string sql, int bytes, out IntPtr statement, IntPtr tail);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_step(IntPtr statement);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr sqlite3_column_text(IntPtr statement, int column);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_finalize(IntPtr statement);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr sqlite3_errmsg(IntPtr db);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern void sqlite3_free(IntPtr value);
+    public static IntPtr Open(string path) { var result = sqlite3_open_v2(path, out var db, OpenReadWriteCreate, IntPtr.Zero); if (result != Ok) throw new InvalidOperationException($"SQLite could not open the database: {result}"); return db; }
+    public static void Close(IntPtr db) { if (db != IntPtr.Zero) sqlite3_close_v2(db); }
+    public static void Execute(IntPtr db, string sql) { var result = sqlite3_exec(db, sql, IntPtr.Zero, IntPtr.Zero, out var error); if (result == Ok) return; var message = error == IntPtr.Zero ? Marshal.PtrToStringAnsi(sqlite3_errmsg(db)) : Marshal.PtrToStringAnsi(error); if (error != IntPtr.Zero) sqlite3_free(error); throw new InvalidOperationException($"SQLite error: {message}"); }
+    public static string? Scalar(IntPtr db, string sql) { var result = sqlite3_prepare_v2(db, sql, -1, out var statement, IntPtr.Zero); if (result != Ok) throw new InvalidOperationException(Marshal.PtrToStringAnsi(sqlite3_errmsg(db))); try { return sqlite3_step(statement) == Row ? Marshal.PtrToStringAnsi(sqlite3_column_text(statement, 0)) : null; } finally { sqlite3_finalize(statement); } }
 }
 
 public sealed class PasswordService

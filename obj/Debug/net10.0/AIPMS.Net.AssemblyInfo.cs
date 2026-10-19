@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("AIPMS.Net")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e84f972b0ecd716e1f372e464dd674901cd5f785")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+266f139a56574338e4a7f0b41b9f90fecf592e74")]
 [assembly: System.Reflection.AssemblyProductAttribute("AIPMS.Net")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AIPMS.Net")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

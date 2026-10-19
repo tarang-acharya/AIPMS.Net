@@ -7,6 +7,7 @@ builder.Services.AddSingleton<TokenService>();
 builder.Services.AddSingleton<ResumeAnalyzer>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 var app = builder.Build();
+_ = app.Services.GetRequiredService<AipmsStore>(); // Create and seed aipms.db during startup.
 app.UseCors(); app.UseDefaultFiles(); app.UseStaticFiles();
 var api = app.MapGroup("/api");
 api.MapGet("/health", () => new { status = "ok", time = DateTime.UtcNow });
