@@ -129,26 +129,30 @@ public sealed class TokenService(IConfiguration configuration)
     private readonly byte[] _key = Encoding.UTF8.GetBytes(configuration["AIPMS_TOKEN_KEY"] ?? "change-this-development-key-before-production-aipms");
     public string Create(User user)
     {
-        var payload = JsonSerializer.Serialize(new TokenPayload(user.Id, user.Email, user.Role, DateTimeOffset.UtcNow.AddDays(7).ToUnixTimeSeconds()));
-        var data = Base64Url(Encoding.UTF8.GetBytes(payload));
-        return $"{data}.{Base64Url(Sign(data))}";
+        var now = DateTimeOffset.UtcNow;
+        var header = Base64Url(Encoding.UTF8.GetBytes("{\"alg\":\"HS256\",\"typ\":\"JWT\"}"));
+        var payload = Base64Url(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new JwtPayload(user.Id, user.Email, user.Role, now.ToUnixTimeSeconds(), now.AddDays(7).ToUnixTimeSeconds()))));
+        var unsigned = $"{header}.{payload}";
+        return $"{unsigned}.{Base64Url(Sign(unsigned))}";
     }
     public UserSession? Validate(string? authorization)
     {
         if (string.IsNullOrWhiteSpace(authorization) || !authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return null;
         var pieces = authorization[7..].Split('.');
-        if (pieces.Length != 2 || !CryptographicOperations.FixedTimeEquals(Sign(pieces[0]), FromBase64Url(pieces[1]))) return null;
+        if (pieces.Length != 3 || !CryptographicOperations.FixedTimeEquals(Sign($"{pieces[0]}.{pieces[1]}"), FromBase64Url(pieces[2]))) return null;
         try
         {
-            var value = JsonSerializer.Deserialize<TokenPayload>(Encoding.UTF8.GetString(FromBase64Url(pieces[0])));
-            return value is null || value.ExpiresAt < DateTimeOffset.UtcNow.ToUnixTimeSeconds() ? null : new UserSession(value.Id, value.Email, value.Role);
+            using var header = JsonDocument.Parse(Encoding.UTF8.GetString(FromBase64Url(pieces[0])));
+            if (header.RootElement.GetProperty("alg").GetString() != "HS256" || header.RootElement.GetProperty("typ").GetString() != "JWT") return null;
+            var value = JsonSerializer.Deserialize<JwtPayload>(Encoding.UTF8.GetString(FromBase64Url(pieces[1])));
+            return value is null || value.Exp < DateTimeOffset.UtcNow.ToUnixTimeSeconds() ? null : new UserSession(value.Sub, value.Email, value.Role);
         }
         catch { return null; }
     }
     private byte[] Sign(string value) => HMACSHA256.HashData(_key, Encoding.UTF8.GetBytes(value));
     private static string Base64Url(byte[] value) => Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     private static byte[] FromBase64Url(string value) => Convert.FromBase64String(value.Replace('-', '+').Replace('_', '/') + new string('=', (4 - value.Length % 4) % 4));
-    private sealed record TokenPayload(int Id, string Email, string Role, long ExpiresAt);
+    private sealed record JwtPayload(int Sub, string Email, string Role, long Iat, long Exp);
 }
 
 public sealed class ResumeAnalyzer

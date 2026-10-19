@@ -14,7 +14,7 @@ Open the URL printed in the terminal. The app creates the SQLite database `App_D
 
 - ASP.NET Core 10 Minimal API replaces Express.
 - `Models.cs` contains the former SQLite schema as C# domain models.
-- `Services.cs` creates and maintains the SQLite schema (`users`, `students`, `recruiters`, `companies`, `jobs`, `applications`, `resumes`, `interviews`, `offer_letters`, `notifications`, and related tables), along with PBKDF2 password hashing, signed Bearer sessions, resume scoring, and local PDF/DOCX text extraction.
+- `Services.cs` creates and maintains the SQLite schema (`users`, `students`, `recruiters`, `companies`, `jobs`, `applications`, `resumes`, `interviews`, `offer_letters`, `notifications`, and related tables), along with PBKDF2 password hashing, HS256 JWT authentication, resume scoring, and local PDF/DOCX text extraction.
 - `Program.cs` contains the compatible REST routes and serves the unchanged SPA.
 - Files uploaded as resumes are stored under `App_Data/uploads`.
 
