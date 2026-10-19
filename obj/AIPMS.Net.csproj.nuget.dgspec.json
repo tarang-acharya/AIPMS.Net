@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\AIPMS.Net\\AIPMS.Net.csproj": {}
+    "C:\\Users\\achar\\Documents\\Codex\\2026-10-19\\referenced-chatgpt-conversation-this-is-an\\outputs\\AIPMS.Net\\AIPMS.Net.csproj": {}
   },
   "projects": {
-    "D:\\AIPMS.Net\\AIPMS.Net.csproj": {
+    "C:\\Users\\achar\\Documents\\Codex\\2026-10-19\\referenced-chatgpt-conversation-this-is-an\\outputs\\AIPMS.Net\\AIPMS.Net.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\AIPMS.Net\\AIPMS.Net.csproj",
+        "projectUniqueName": "C:\\Users\\achar\\Documents\\Codex\\2026-10-19\\referenced-chatgpt-conversation-this-is-an\\outputs\\AIPMS.Net\\AIPMS.Net.csproj",
         "projectName": "AIPMS.Net",
-        "projectPath": "D:\\AIPMS.Net\\AIPMS.Net.csproj",
+        "projectPath": "C:\\Users\\achar\\Documents\\Codex\\2026-10-19\\referenced-chatgpt-conversation-this-is-an\\outputs\\AIPMS.Net\\AIPMS.Net.csproj",
         "packagesPath": "C:\\Users\\achar\\.nuget\\packages\\",
-        "outputPath": "D:\\AIPMS.Net\\obj\\",
+        "outputPath": "C:\\Users\\achar\\Documents\\Codex\\2026-10-19\\referenced-chatgpt-conversation-this-is-an\\outputs\\AIPMS.Net\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\achar\\AppData\\Roaming\\NuGet\\NuGet.Config"
